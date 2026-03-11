@@ -20,6 +20,38 @@ import { GitService } from "../../git/Services/GitService.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@t3tools/contracts";
 
+const CHECKPOINT_DIFF_SUMMARY_MAX_OUTPUT_BYTES = 64_000;
+const CHECKPOINT_DIFF_TOO_LARGE_MESSAGE = "Diff too large to render as a patch.";
+const CHECKPOINT_DIFF_SUMMARY_MESSAGE = "Showing a bounded change summary instead.";
+
+function isOversizedCheckpointDiffError(error: GitCommandError): boolean {
+  return (
+    error.operation === "CheckpointStore.diffCheckpoints" &&
+    error.command.startsWith("git diff ") &&
+    error.detail.includes("output exceeded") &&
+    error.detail.includes("was truncated")
+  );
+}
+
+function formatOversizedCheckpointDiff(summary: string | null): string {
+  const normalizedSummary = summary?.trim() ?? "";
+  if (normalizedSummary.length === 0) {
+    return [
+      CHECKPOINT_DIFF_TOO_LARGE_MESSAGE,
+      CHECKPOINT_DIFF_SUMMARY_MESSAGE,
+      "",
+      "Unable to generate a change summary for this diff.",
+    ].join("\n");
+  }
+
+  return [
+    CHECKPOINT_DIFF_TOO_LARGE_MESSAGE,
+    CHECKPOINT_DIFF_SUMMARY_MESSAGE,
+    "",
+    normalizedSummary,
+  ].join("\n");
+}
+
 const makeCheckpointStore = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -241,11 +273,48 @@ const makeCheckpointStore = Effect.gen(function* () {
         });
       }
 
-      const result = yield* git.execute({
-        operation,
-        cwd: input.cwd,
-        args: ["diff", "--patch", "--minimal", "--no-color", fromCommitOid, toCommitOid],
-      });
+      const result = yield* git
+        .execute({
+          operation,
+          cwd: input.cwd,
+          args: ["diff", "--patch", "--minimal", "--no-color", fromCommitOid, toCommitOid],
+        })
+        .pipe(
+          Effect.catchTag("GitCommandError", (error) => {
+            if (!isOversizedCheckpointDiffError(error)) {
+              return Effect.fail(error);
+            }
+
+            return git
+              .execute({
+                operation,
+                cwd: input.cwd,
+                args: [
+                  "diff",
+                  "--shortstat",
+                  "--summary",
+                  "--no-color",
+                  fromCommitOid,
+                  toCommitOid,
+                ],
+                maxOutputBytes: CHECKPOINT_DIFF_SUMMARY_MAX_OUTPUT_BYTES,
+              })
+              .pipe(
+                Effect.map((summaryResult) => ({
+                  code: summaryResult.code,
+                  stdout: formatOversizedCheckpointDiff(summaryResult.stdout),
+                  stderr: summaryResult.stderr,
+                })),
+                Effect.catch(() =>
+                  Effect.succeed({
+                    code: 0,
+                    stdout: formatOversizedCheckpointDiff(null),
+                    stderr: "",
+                  }),
+                ),
+              );
+          }),
+        );
 
       return result.stdout;
     });
