@@ -255,6 +255,47 @@ describe("parseAgentListCliOutput", () => {
     NodeAssert.equal(result[0]!.hidden, true);
     NodeAssert.equal(result[1]!.hidden, false);
   });
+
+  it("strips terminal OSC title sequences from agent headers (regression for #7716)", () => {
+    // `opencode agent list` intermittently prefixes the first line with a terminal
+    // title OSC `ESC ]0;user: cwd BEL` (e.g. `\x1b]0;heinrich: ready\x07`) on macOS.
+    // The parser must sanitize before applying AGENT_HEADER_RE or it creates a
+    // polluted agent id `]0;heinrich: ready build` that blocks build mode.
+    const stdout = [
+      "\u001b]0;heinrich: ready\u0007build (primary)",
+      "  " + JSON.stringify([{ permission: "*", action: "allow", pattern: "*" }]),
+      "plan (primary)",
+      "  " + JSON.stringify([{ permission: "*", action: "allow", pattern: "*" }]),
+    ].join("\n");
+
+    const result = parseAgentListCliOutput(stdout);
+    NodeAssert.equal(result.length, 2);
+    NodeAssert.equal(result[0]!.name, "build");
+    NodeAssert.equal(result[0]!.mode, "primary");
+    NodeAssert.equal(result[1]!.name, "plan");
+  });
+
+  it("strips ANSI color sequences from agent headers", () => {
+    const stdout = [
+      "\u001b[36mbuild\u001b[0m (primary)",
+      "  " + JSON.stringify([{ permission: "*", action: "allow", pattern: "*" }]),
+    ].join("\n");
+
+    const result = parseAgentListCliOutput(stdout);
+    NodeAssert.equal(result.length, 1);
+    NodeAssert.equal(result[0]!.name, "build");
+  });
+
+  it("handles OSC terminated with ST (ESC \\)", () => {
+    const stdout = [
+      "\u001b]0;heinrich: ready\u001b\\build (primary)",
+      "  " + JSON.stringify([{ permission: "*", action: "allow", pattern: "*" }]),
+    ].join("\n");
+
+    const result = parseAgentListCliOutput(stdout);
+    NodeAssert.equal(result.length, 1);
+    NodeAssert.equal(result[0]!.name, "build");
+  });
 });
 
 describe("parseSkillsCliOutput", () => {
