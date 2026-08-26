@@ -199,6 +199,19 @@ function parseServerUrlFromOutput(output: string): string | null {
 const SLUG_LINE_RE = /^(\S+\/\S+)\s*$/;
 const AGENT_HEADER_RE = /^(.+)\s+\((\S+)\)\s*$/;
 
+/**
+ * Strip terminal escape sequences that can leak into CLI stdout on macOS.
+ * `opencode agent list` intermittently prefixes the first line with an OSC
+ * title `ESC ]0;user: cwd BEL` / `ESC ]0;... ESC \` or ANSI color `ESC[...m`.
+ * Without sanitizing, `AGENT_HEADER_RE` captures the polluted prefix as the
+ * agent name (`]0;heinrich: ready build` — #7716).
+ */
+function stripTerminalEscapes(input: string): string {
+  return input
+    .replace(/\x1B\][^\x07\x1B]*(\x07|\x1B\\)/g, "")
+    .replace(/\x1B\[[0-9:;?]*[ -/]*[@-~]/g, "");
+}
+
 // Agents that are always hidden in OpenCode but the CLI "agent list" command
 // does not expose the hidden flag. Keep in sync with OpenCode agent
 // definitions (in the OpenCode repo: packages/opencode/src/agent/agent.ts).
@@ -269,7 +282,7 @@ export function parseModelsCliOutput(stdout: string): {
 /** @internal */
 export function parseAgentListCliOutput(stdout: string): ReadonlyArray<Agent> {
   const agents: Array<Agent> = [];
-  const lines = stdout.split("\n");
+  const lines = stripTerminalEscapes(stdout).split("\n");
   let currentHeader: { name: string; mode: string } | null = null;
   const blockLines: Array<string> = [];
 
